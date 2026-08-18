@@ -36,6 +36,19 @@ def _zoom_scale_for_style(style: str) -> float:
     return {"moderate": 1.4, "aggressive": 1.9}.get(style, 1.4)
 
 
+def _build_time_windowed_expr(targets: list[dict], value_fn, default_expr: str) -> str:
+    """Builds a nested ffmpeg if(between(time,t0,t1), value, ...) chain, one
+    level per target, falling through to default_expr when no target's
+    window is active. Nesting (rather than "+") avoids the default value
+    getting added multiple times when several targets are simultaneously
+    inactive."""
+    expr = default_expr
+    for target in reversed(targets):
+        t0, t1 = target["t"], target["t"] + 2.5
+        expr = f"if(between(time,{t0},{t1}),{value_fn(target)},{expr})"
+    return expr
+
+
 def apply_zoom(session: RecordingSession, output_path: str, style: str = "moderate") -> str:
     """Builds an ffmpeg zoompan filter that zooms toward each click target
     for a few seconds, then back out. Falls back to a straight re-encode
@@ -52,18 +65,28 @@ def apply_zoom(session: RecordingSession, output_path: str, style: str = "modera
             output_path,
         ]
     else:
-        # One zoompan expression per target, zooming in around (x,y) between
-        # t and t+2.5s then back to 1.0 -- a simple Ken-Burns-style pulse per
-        # click, not a full pan/tilt system (that's a v2 refinement, not
-        # needed for the "tutorial gets a bit more polish" goal here).
-        zoom_expr_parts = []
-        for target in targets:
-            t0, t1 = target["t"], target["t"] + 2.5
-            zoom_expr_parts.append(
-                f"if(between(t,{t0},{t1}),{scale},1)"
-            )
-        zoom_expr = "+".join(zoom_expr_parts) if len(zoom_expr_parts) > 1 else zoom_expr_parts[0]
-        filter_str = f"zoompan=z='{zoom_expr}':d=1:s=hd1080"
+        # One nested if(between(time,...)) per target, zooming in around
+        # (x,y) between t and t+2.5s then back to 1.0 -- a simple
+        # Ken-Burns-style pulse per click, not a full pan/tilt system
+        # (that's a v2 refinement, not needed for the "tutorial gets a bit
+        # more polish" goal here).
+        #
+        # zoompan's seconds-based time variable is `time` (not a bare `t`,
+        # which doesn't exist for this filter -- only `in`/`on` frame
+        # counts and `in_time`/`it`). Windows are built as a nested
+        # if/else chain (not summed with "+") so that when zero or
+        # multiple targets are inactive at a given instant, the default
+        # branch is used exactly once instead of stacking.
+        zoom_expr = _build_time_windowed_expr(targets, lambda tgt: str(scale), "1")
+        x_expr = _build_time_windowed_expr(
+            targets, lambda tgt: f"{tgt['x']}-(iw/zoom/2)", "iw/2-(iw/zoom/2)"
+        )
+        y_expr = _build_time_windowed_expr(
+            targets, lambda tgt: f"{tgt['y']}-(ih/zoom/2)", "ih/2-(ih/zoom/2)"
+        )
+        filter_str = (
+            f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}':d=1:s=hd1080"
+        )
         cmd = [
             FFMPEG, "-y", "-i", session.raw_video_path,
             "-vf", filter_str,

@@ -62,3 +62,24 @@ class TestApplyZoom(unittest.TestCase):
         result = zp.apply_zoom(session, "C:/tmp/zoomed.mp4")
         self.assertEqual(result, "C:/tmp/zoomed.mp4")
         mock_run.assert_called_once()
+
+    @patch("zoom_polish.subprocess.run")
+    def test_filter_uses_time_variable_and_real_click_coordinates(self, mock_run):
+        # Regression: zoompan's seconds-based variable is `time`, not a
+        # bare `t` (which isn't defined for this filter and would fail
+        # ffmpeg filter init against a real binary). And the zoom must
+        # actually center on the click's x/y, not default to 0,0.
+        mock_run.return_value = MagicMock(returncode=0)
+        session = RecordingSession(raw_video_path="C:/tmp/raw.mp4", cursor_log=[
+            {"t": 1.0, "x": 500, "y": 300, "click": True},
+        ])
+        zp.apply_zoom(session, "C:/tmp/zoomed.mp4", style="moderate")
+        cmd = mock_run.call_args[0][0]
+        filter_arg = cmd[cmd.index("-vf") + 1]
+        # Must reference zoompan's `time` variable, not a bare `t` (guard
+        # against a stray "between(t," substring collision with "time").
+        self.assertIn("between(time,", filter_arg)
+        self.assertNotIn("between(t,", filter_arg)
+        # The click's actual x/y must appear in the x/y expressions.
+        self.assertIn("500", filter_arg)
+        self.assertIn("300", filter_arg)

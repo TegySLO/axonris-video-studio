@@ -46,6 +46,20 @@ class TestBuildKeepSegments(unittest.TestCase):
         segments = ac._build_keep_segments(total_duration=20.0, silence_intervals=[], margin_sec=0.3)
         self.assertEqual(segments, [(0.0, 20.0)])
 
+    def test_short_silence_below_double_margin_does_not_invert_or_overlap(self):
+        # Regression: a silence shorter than 2*margin_sec (here 0.4s < 0.6s)
+        # used to make cut_end < cut_start, producing overlapping
+        # keep-segments around consecutive short silences.
+        segments = ac._build_keep_segments(
+            total_duration=20.0,
+            silence_intervals=[(10.0, 10.4), (15.0, 15.4)],
+            margin_sec=0.3,
+        )
+        for prev, cur in zip(segments, segments[1:]):
+            self.assertLessEqual(prev[1], cur[0])
+        for start, end in segments:
+            self.assertLessEqual(start, end)
+
 
 class TestRemoveSilence(unittest.TestCase):
 

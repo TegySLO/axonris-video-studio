@@ -41,14 +41,17 @@ def _parse_silence_intervals(stderr_text: str) -> list[tuple[float, float]]:
 def _build_keep_segments(total_duration: float, silence_intervals: list[tuple[float, float]], margin_sec: float) -> list[tuple[float, float]]:
     """Same margin model as auto-editor: pad the cut boundary inward by
     margin_sec on each side, so a cut never clips the tail end of speech
-    that trails right up against a silent gap."""
+    that trails right up against a silent gap. When a silence interval is
+    shorter than 2*margin_sec, the two margins would invert (cut_end <
+    cut_start), overlapping neighboring keep-segments -- clamp cut_end to
+    cut_start so the cut degrades to "cut the whole short silence" instead."""
     if not silence_intervals:
         return [(0.0, total_duration)]
     segments = []
     cursor = 0.0
     for start, end in silence_intervals:
         cut_start = start + margin_sec
-        cut_end = end - margin_sec
+        cut_end = max(cut_start, end - margin_sec)
         if cut_start > cursor:
             segments.append((cursor, cut_start))
         cursor = max(cursor, cut_end)
