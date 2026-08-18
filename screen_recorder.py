@@ -345,7 +345,18 @@ class _ActiveRecording:
         scale = float(self._fps) / achieved_fps
         if abs(scale - 1.0) <= _RETIME_TOLERANCE:
             return
-        tmp_path = self._raw_path.replace("raw_capture_", "raw_retimed_tmp_")
+        # BUG FIX (found by an independent re-review after the sibling fix
+        # in video_studio_gui.py, which fixed the identical bug class but
+        # only in the GUI file -- this call site was missed): whole-path
+        # str.replace() also rewrites the DIRECTORY component whenever the
+        # output folder itself contains "raw_capture_" as a substring
+        # (e.g. a folder literally named "raw_capture_videos"), producing
+        # a path in a directory that doesn't exist. basename+join confines
+        # the substitution to the filename only.
+        tmp_path = os.path.join(
+            os.path.dirname(self._raw_path),
+            os.path.basename(self._raw_path).replace("raw_capture_", "raw_retimed_tmp_", 1),
+        )
         try:
             subprocess.run(
                 _build_retime_cmd(self._raw_path, tmp_path, scale),
@@ -387,7 +398,13 @@ class _ActiveRecording:
             self._discard_stderr_log()
 
         if audio_path is not None and os.path.exists(audio_path):
-            muxed_tmp = self._raw_path.replace("raw_capture_", "raw_muxed_tmp_")
+            # Same basename+join fix as _retime_to_wall_clock's tmp_path,
+            # for the same reason -- whole-path replace() corrupts the
+            # directory component when it contains "raw_capture_".
+            muxed_tmp = os.path.join(
+                os.path.dirname(self._raw_path),
+                os.path.basename(self._raw_path).replace("raw_capture_", "raw_muxed_tmp_", 1),
+            )
             try:
                 video_duration = _probe_duration(self._raw_path)
                 subprocess.run(
@@ -396,13 +413,18 @@ class _ActiveRecording:
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
                 os.replace(muxed_tmp, self._raw_path)
-            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, RuntimeError):
                 # Muxing failed (or hung -- see _build_mux_cmd's docstring
                 # for the real, previously-hanging apad bug this timeout
                 # guards against even if some other edge case reproduces
                 # it) -- keep the video-only capture rather than losing
-                # the whole recording. Clean up a possibly-still-running
-                # or partially-written temp file either way.
+                # the whole recording. RuntimeError is here because
+                # _probe_duration (called just above) raises that on an
+                # unparseable ffmpeg duration output -- that used to abort
+                # stop() entirely instead of degrading to video-only, the
+                # one soft-failure path in this block that had accidentally
+                # become hard. Clean up a possibly-still-running or
+                # partially-written temp file either way.
                 try:
                     os.remove(muxed_tmp)
                 except OSError:

@@ -81,6 +81,15 @@ class TestProbeDuration(unittest.TestCase):
         self.assertAlmostEqual(ac._probe_duration("C:/tmp/ok.mp4"), 90.5, places=2)
 
 
+class TestKeptDuration(unittest.TestCase):
+
+    def test_sums_segment_durations(self):
+        self.assertAlmostEqual(ac._kept_duration([(0.0, 5.0), (10.0, 12.0)]), 7.0)
+
+    def test_empty_segments_is_zero(self):
+        self.assertEqual(ac._kept_duration([]), 0.0)
+
+
 class TestRemoveSilence(unittest.TestCase):
 
     @patch("auto_cut.subprocess.run")
@@ -97,3 +106,56 @@ class TestRemoveSilence(unittest.TestCase):
         joined = " ".join(final_cmd)
         self.assertIn("libx264", joined)
         self.assertNotIn("h264_amf", joined.lower())
+
+    @patch("auto_cut.subprocess.run")
+    @patch("auto_cut._probe_duration")
+    def test_all_silent_track_is_not_destroyed(self, mock_duration, mock_run):
+        # Regression, found by a full real end-to-end run (record -> zoom
+        # -> auto-cut): WASAPI loopback captures SYSTEM audio output, not
+        # the microphone -- a normal tutorial (narration via mic, nothing
+        # playing through speakers) yields a fully-silent loopback track.
+        # silencedetect correctly reports the whole track as one silence
+        # interval, and without a guard this "correctly" cut a real 5.07s
+        # recording down to 0.62s (just the two margin slivers) -- 88% of
+        # the recording destroyed. A single "silence" spanning nearly the
+        # whole 20s track (18s out of 20s) should be treated as "this
+        # isn't normal speech-with-pauses" and skip the cut, not applied.
+        mock_duration.return_value = 20.0
+        mock_run.side_effect = [
+            MagicMock(
+                returncode=0,
+                stderr=(
+                    "[silencedetect @ 0x1] silence_start: 1.0\n"
+                    "[silencedetect @ 0x1] silence_end: 19.0 | silence_duration: 18.0\n"
+                ),
+            ),
+            MagicMock(returncode=0),  # passthrough encode pass
+        ]
+        ac.remove_silence("C:/tmp/in.mp4", "C:/tmp/out.mp4", min_keep_ratio=0.3)
+        final_cmd = mock_run.call_args_list[-1][0][0]
+        joined = " ".join(final_cmd)
+        # Passthrough branch has no -vf select/aselect filter -- if a cut
+        # were (wrongly) still applied, "select=" would appear here.
+        self.assertNotIn("select=", joined)
+
+    @patch("auto_cut.subprocess.run")
+    @patch("auto_cut._probe_duration")
+    def test_genuine_pauses_still_get_cut(self, mock_duration, mock_run):
+        # The guard must not disable cutting altogether -- normal speech
+        # with real pauses (well under the min_keep_ratio threshold of
+        # content lost) should still be cut as before.
+        mock_duration.return_value = 20.0
+        mock_run.side_effect = [
+            MagicMock(
+                returncode=0,
+                stderr=(
+                    "[silencedetect @ 0x1] silence_start: 8.0\n"
+                    "[silencedetect @ 0x1] silence_end: 12.0 | silence_duration: 4.0\n"
+                ),
+            ),
+            MagicMock(returncode=0),
+        ]
+        ac.remove_silence("C:/tmp/in.mp4", "C:/tmp/out.mp4", min_keep_ratio=0.3)
+        final_cmd = mock_run.call_args_list[-1][0][0]
+        joined = " ".join(final_cmd)
+        self.assertIn("select=", joined)

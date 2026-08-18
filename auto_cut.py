@@ -66,7 +66,30 @@ def _build_keep_segments(total_duration: float, silence_intervals: list[tuple[fl
     return segments
 
 
-def remove_silence(input_path: str, output_path: str, margin_sec: float = 0.3, noise_threshold_db: int = -30, min_silence_sec: float = 0.5) -> str:
+def _kept_duration(segments: list[tuple[float, float]]) -> float:
+    return sum(end - start for start, end in segments)
+
+
+def remove_silence(
+    input_path: str, output_path: str, margin_sec: float = 0.3,
+    noise_threshold_db: int = -30, min_silence_sec: float = 0.5,
+    min_keep_ratio: float = 0.3,
+) -> str:
+    """BUG FIX (found via a full real end-to-end run, not caught by any
+    mocked test or by tests/test_real_capture.py -- those stop at the raw
+    recording, before zoom/cut ever run on it): WASAPI loopback records
+    SYSTEM AUDIO OUTPUT, not the microphone -- the normal case for a
+    screen tutorial is narration through the mic while nothing plays
+    through speakers, so the loopback track is silence for the ENTIRE
+    recording. Without a guard, silencedetect correctly classifies "the
+    whole track" as one giant silence interval, and this function
+    "correctly" cut ~88% of a real 5.07s test recording down to 0.62s
+    (just the two margin slivers) -- technically working as designed,
+    catastrophic in practice for the actual use case. If the computed cut
+    would keep less than `min_keep_ratio` of the original duration, treat
+    that as "this doesn't look like normal speech-with-pauses, it looks
+    like a silent/near-silent track" and skip cutting entirely rather
+    than trusting the detector on a pattern it wasn't designed for."""
     duration = _probe_duration(input_path)
     detect_cmd = [
         FFMPEG, "-i", input_path,
@@ -79,6 +102,9 @@ def remove_silence(input_path: str, output_path: str, margin_sec: float = 0.3, n
     )
     intervals = _parse_silence_intervals(detect_result.stderr)
     segments = _build_keep_segments(duration, intervals, margin_sec)
+
+    if duration > 0 and _kept_duration(segments) < min_keep_ratio * duration:
+        segments = [(0.0, duration)]
 
     if len(segments) <= 1 and segments == [(0.0, duration)]:
         # Nothing to cut -- still produce a proper libx264-encoded output

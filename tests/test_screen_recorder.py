@@ -126,6 +126,30 @@ class TestActiveRecordingStop(unittest.TestCase):
         self.assertEqual(recording._proc.wait.call_count, 2)
         self.assertEqual(session.raw_video_path, self.raw_path)
 
+    def test_retime_tmp_path_survives_marker_substring_in_output_dir(self):
+        # Regression: found by an independent re-review after the sibling
+        # str.replace() bug was fixed in video_studio_gui.py but NOT
+        # carried into this file -- whole-path replace() also rewrites the
+        # DIRECTORY component whenever the output folder itself contains
+        # "raw_capture_" as a substring (a real, if unusual, folder name a
+        # user could pick), producing a tmp path in a directory that
+        # doesn't exist.
+        marker_dir = os.path.join(self._tmpdir, "raw_capture_videos")
+        os.makedirs(marker_dir, exist_ok=True)
+        raw_path = os.path.join(marker_dir, "raw_capture_1.mp4")
+        with open(raw_path, "wb") as f:
+            f.write(b"not-really-an-mp4-but-non-empty")
+        recording = _fake_recording(raw_path, frames=150, elapsed=15.0)  # achieved fps != declared -> retime fires
+
+        with patch("screen_recorder.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            with patch("screen_recorder.os.replace") as mock_replace:
+                recording.stop()
+                tmp_path_used = mock_replace.call_args[0][0]
+
+        self.assertEqual(os.path.dirname(tmp_path_used), marker_dir)
+        self.assertNotIn("raw_retimed_tmp_videos", tmp_path_used)
+
     def test_stop_raises_when_capture_produced_an_empty_file(self):
         # Regression: an odd-dimension window killed ffmpeg instantly, the
         # capture loop swallowed the broken pipe, and stop() happily
