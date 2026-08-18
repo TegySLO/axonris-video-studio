@@ -2,8 +2,13 @@ __pycache__/
 *.pyc
 .venv/
 venv/
-config.json
+/config.json
 *.log
 node_modules/
 out/
 dist/
+build/
+*.spec
+.vscode/
+.idea/
+.env

@@ -33,7 +33,7 @@ def show_wizard(parent=None) -> bool:
     (safe to run again -- re-checks current state each time instead of
     assuming a fresh install)."""
     from PySide6.QtWidgets import (
-        QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QWidget,
+        QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     )
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QFont
