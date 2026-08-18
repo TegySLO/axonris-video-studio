@@ -1,0 +1,12 @@
+{
+  "id": "axonris-video-studio",
+  "version": "0.1.0",
+  "entry_exe": "video_studio_gui.exe",
+  "engines": { "axonris_hub": ">=1.0.0" },
+  "publisher": "axonris",
+  "description": "Generate short explainer/product-demo videos from a description, or turn a screen recording into a polished tutorial. BYOK: bring your own Claude Code + cloud GPU account.",
+  "tagline": "Free, open-source AI video tool for Axonris Hub.",
+  "prereqs": [],
+  "download_url": null,
+  "sha256": null
+}
