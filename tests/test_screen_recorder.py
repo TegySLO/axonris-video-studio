@@ -61,6 +61,8 @@ class TestActiveRecordingStop(unittest.TestCase):
         recording._thread = MagicMock()
         recording._cursor_logger = MagicMock()
         recording._cursor_logger.stop.return_value = []
+        recording._audio_capture = MagicMock()
+        recording._audio_capture.stop.return_value = None
         recording._raw_path = "C:/tmp/out.mp4"
         recording._proc = MagicMock()
         recording._proc.wait.side_effect = [subprocess.TimeoutExpired(cmd="ffmpeg", timeout=10), None]
@@ -70,6 +72,99 @@ class TestActiveRecordingStop(unittest.TestCase):
         recording._proc.kill.assert_called_once()
         self.assertEqual(recording._proc.wait.call_count, 2)
         self.assertEqual(session.raw_video_path, "C:/tmp/out.mp4")
+
+    @patch("screen_recorder.os.path.exists")
+    @patch("screen_recorder.os.replace")
+    @patch("screen_recorder.os.remove")
+    @patch("screen_recorder.subprocess.run")
+    def test_stop_muxes_audio_into_raw_path_when_audio_capture_succeeds(
+        self, mock_run, mock_remove, mock_replace, mock_exists,
+    ):
+        mock_exists.return_value = True
+        recording = sr._ActiveRecording.__new__(sr._ActiveRecording)
+        recording._stop_event = MagicMock()
+        recording._thread = MagicMock()
+        recording._cursor_logger = MagicMock()
+        recording._cursor_logger.stop.return_value = []
+        recording._audio_capture = MagicMock()
+        recording._audio_capture.stop.return_value = "C:/tmp/raw_audio_1.wav"
+        recording._raw_path = "C:/tmp/raw_capture_1.mp4"
+        recording._proc = MagicMock()
+        recording._proc.wait.return_value = None
+
+        session = recording.stop()
+
+        mock_run.assert_called_once()
+        mux_cmd = mock_run.call_args[0][0]
+        joined = " ".join(mux_cmd)
+        self.assertIn("-c:a", mux_cmd)
+        self.assertIn("aac", mux_cmd)
+        self.assertNotIn("h264_amf", joined.lower())
+        self.assertNotIn("nvenc", joined.lower())
+        # Muxed temp file replaces the video-only capture at the original path
+        mock_replace.assert_called_once()
+        replace_args = mock_replace.call_args[0]
+        self.assertEqual(replace_args[1], "C:/tmp/raw_capture_1.mp4")
+        mock_remove.assert_called_once_with("C:/tmp/raw_audio_1.wav")
+        self.assertEqual(session.raw_video_path, "C:/tmp/raw_capture_1.mp4")
+
+    @patch("screen_recorder.subprocess.run")
+    def test_stop_skips_mux_when_audio_capture_fails(self, mock_run):
+        recording = sr._ActiveRecording.__new__(sr._ActiveRecording)
+        recording._stop_event = MagicMock()
+        recording._thread = MagicMock()
+        recording._cursor_logger = MagicMock()
+        recording._cursor_logger.stop.return_value = []
+        recording._audio_capture = MagicMock()
+        recording._audio_capture.stop.return_value = None
+        recording._raw_path = "C:/tmp/raw_capture_1.mp4"
+        recording._proc = MagicMock()
+        recording._proc.wait.return_value = None
+
+        session = recording.stop()
+
+        mock_run.assert_not_called()
+        self.assertEqual(session.raw_video_path, "C:/tmp/raw_capture_1.mp4")
+
+
+class TestAudioCapture(unittest.TestCase):
+
+    @patch("screen_recorder.wave.open")
+    @patch("screen_recorder.pyaudio.PyAudio")
+    def test_start_opens_wasapi_loopback_stream_and_stop_returns_wav_path(self, mock_pyaudio_cls, mock_wave_open):
+        mock_pa = MagicMock()
+        mock_pyaudio_cls.return_value = mock_pa
+        mock_pa.get_default_wasapi_loopback.return_value = {
+            "index": 20, "name": "Speakers [Loopback]",
+            "maxInputChannels": 2, "defaultSampleRate": 48000.0,
+            "isLoopbackDevice": True,
+        }
+        mock_stream = MagicMock()
+        mock_stream.read.return_value = b"\x00\x00" * 1024
+        mock_pa.open.return_value = mock_stream
+
+        capture = sr.AudioCapture()
+        capture.start("C:/tmp", 12345)
+        _, open_kwargs = mock_pa.open.call_args
+        self.assertEqual(open_kwargs["channels"], 2)
+        self.assertEqual(open_kwargs["rate"], 48000)
+        self.assertEqual(open_kwargs["input_device_index"], 20)
+
+        result = capture.stop()
+        self.assertEqual(result, os.path.join("C:/tmp", "raw_audio_12345.wav"))
+        mock_stream.close.assert_called_once()
+        mock_pa.terminate.assert_called_once()
+
+    @patch("screen_recorder.pyaudio.PyAudio")
+    def test_start_fails_soft_when_no_loopback_device(self, mock_pyaudio_cls):
+        mock_pa = MagicMock()
+        mock_pyaudio_cls.return_value = mock_pa
+        mock_pa.get_default_wasapi_loopback.side_effect = OSError("no default output device")
+
+        capture = sr.AudioCapture()
+        capture.start("C:/tmp", 12345)
+        result = capture.stop()
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":
