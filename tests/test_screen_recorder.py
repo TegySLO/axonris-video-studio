@@ -53,5 +53,24 @@ class TestFfmpegCommandConstruction(unittest.TestCase):
             self.assertEqual(kwargs.get("creationflags"), getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
+class TestActiveRecordingStop(unittest.TestCase):
+
+    def test_stop_kills_process_on_wait_timeout(self):
+        recording = sr._ActiveRecording.__new__(sr._ActiveRecording)
+        recording._stop_event = MagicMock()
+        recording._thread = MagicMock()
+        recording._cursor_logger = MagicMock()
+        recording._cursor_logger.stop.return_value = []
+        recording._raw_path = "C:/tmp/out.mp4"
+        recording._proc = MagicMock()
+        recording._proc.wait.side_effect = [subprocess.TimeoutExpired(cmd="ffmpeg", timeout=10), None]
+
+        session = recording.stop()
+
+        recording._proc.kill.assert_called_once()
+        self.assertEqual(recording._proc.wait.call_count, 2)
+        self.assertEqual(session.raw_video_path, "C:/tmp/out.mp4")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -12,7 +12,6 @@ a cursor log) is reimplemented, in zoom_polish.py (Task 4)."""
 from __future__ import annotations
 import os
 import subprocess
-import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -99,7 +98,11 @@ class _ActiveRecording:
             self._proc.stdin.close()
         except OSError:
             pass
-        self._proc.wait(timeout=10)
+        try:
+            self._proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self._proc.kill()
+            self._proc.wait()
         return RecordingSession(raw_video_path=self._raw_path, cursor_log=cursor_entries)
 
 
