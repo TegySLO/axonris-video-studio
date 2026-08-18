@@ -1,0 +1,31 @@
+{
+  "templates": [
+    {
+      "id": "concept-explainer-short",
+      "label": "Concept Explainer (Short)",
+      "format": "9:16 vertical",
+      "engine": "python-build",
+      "parameters": [
+        { "name": "title", "type": "string", "required": true },
+        { "name": "scenes", "type": "array", "required": true,
+          "item_fields": ["id", "slug", "visual", "asset", "text"] }
+      ],
+      "notes": "Driven by scenes.json -- narration text per scene, burned karaoke captions timed via Whisper. Pacing budget: narration_word_count / 2.4 = seconds per scene; hook scene should stay under 3 seconds."
+    },
+    {
+      "id": "product-demo",
+      "label": "Product Demo",
+      "format": "16:9 landscape",
+      "engine": "remotion",
+      "parameters": [
+        { "name": "product.name", "type": "string", "required": true },
+        { "name": "product.tagline", "type": "string", "required": true },
+        { "name": "product.logo", "type": "string", "required": false },
+        { "name": "product.website", "type": "string", "required": false },
+        { "name": "scenes", "type": "array", "required": true,
+          "item_fields": ["type", "durationSeconds", "content"] }
+      ],
+      "notes": "Config lives in src/config/demo-config.ts (ProductDemoConfig type) in the upstream template; screen recordings referenced by scenes go in public/demos/."
+    }
+  ]
+}
