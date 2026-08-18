@@ -4,12 +4,14 @@ Entry point for the compiled module_manifest.json's entry_exe
 the actual build step, matching axonris-sub-engine/build_sub_engine.py's
 own Nuitka pattern)."""
 from __future__ import annotations
+import os
 import sys
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QStackedWidget, QWidget, QVBoxLayout,
     QHBoxLayout, QLabel, QPushButton, QComboBox, QProgressBar, QFileDialog,
 )
+from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QFont
 
 from window_picker import list_recordable_windows
@@ -33,6 +35,42 @@ class _GeneratePage(QWidget):
         lay.addStretch(1)
 
 
+class _PostProcessWorker(QThread):
+    """Runs stop -> zoom -> silence-cut off the GUI thread.
+
+    These three stages spawn four ffmpeg passes and take minutes for a
+    real-length recording; running them in the clicked-slot froze the
+    whole window (the "Processing..." label could not even repaint,
+    because no event-loop iteration happened between setText and the
+    blocking work). Any failure is reported through result_signal instead
+    of escaping the slot -- previously an ffmpeg error left BOTH buttons
+    disabled with the status stuck on "Processing...", i.e. a dead page
+    until the app was restarted."""
+
+    result_signal = Signal(bool, str)
+
+    def __init__(self, recording, output_dir: str):
+        super().__init__()
+        self._recording = recording
+        self._output_dir = output_dir
+
+    def run(self):
+        try:
+            session = self._recording.stop()
+            # os.path.basename + join, not a whole-path str.replace(): the
+            # old form also rewrote the DIRECTORY component whenever the
+            # chosen output folder happened to contain "raw_capture_" or
+            # "zoomed_", producing a path that does not exist.
+            base = os.path.basename(session.raw_video_path)
+            zoomed_path = os.path.join(self._output_dir, base.replace("raw_capture_", "zoomed_", 1))
+            final_path = os.path.join(self._output_dir, base.replace("raw_capture_", "final_", 1))
+            apply_zoom(session, zoomed_path)
+            remove_silence(zoomed_path, final_path)
+            self.result_signal.emit(True, final_path)
+        except Exception as exc:  # noqa: BLE001 -- must reach the UI, whatever it is
+            self.result_signal.emit(False, f"{type(exc).__name__}: {exc}")
+
+
 class _RecordPage(QWidget):
     """Record a tutorial: pick a window/screen, record, then auto-polish
     (cursor-driven zoom + silence-based auto-cut) into a finished MP4.
@@ -43,6 +81,7 @@ class _RecordPage(QWidget):
         super().__init__()
         self._active_recording = None
         self._output_dir = None
+        self._worker = None
 
         lay = QVBoxLayout(self)
         self._btn_back = QPushButton("← Back")
@@ -106,16 +145,36 @@ class _RecordPage(QWidget):
             return
         self._status_lbl.setText("Processing (zoom + silence cut)...")
         self._btn_stop.setEnabled(False)
-        session = self._active_recording.stop()
+
+        self._worker = _PostProcessWorker(self._active_recording, self._output_dir)
         self._active_recording = None
+        self._worker.result_signal.connect(self._on_processing_finished)
+        self._worker.start()
 
-        zoomed_path = session.raw_video_path.replace("raw_capture_", "zoomed_")
-        apply_zoom(session, zoomed_path)
-        final_path = zoomed_path.replace("zoomed_", "final_")
-        remove_silence(zoomed_path, final_path)
+    def _on_processing_finished(self, ok: bool, message: str):
+        self._status_lbl.setText(f"Done: {message}" if ok else f"Failed: {message}")
+        self._btn_start.setEnabled(self._window_combo.count() > 0)
+        self._worker = None
 
-        self._status_lbl.setText(f"Done: {final_path}")
-        self._btn_start.setEnabled(True)
+    def shutdown(self):
+        """Stop anything still running before the window closes -- an
+        in-flight recording would otherwise leave its ffmpeg child
+        unreaped and the WASAPI stream open, and an in-flight
+        post-processing worker would be killed mid-pass by interpreter
+        exit, orphaning its ffmpeg."""
+        recording, self._active_recording = self._active_recording, None
+        if recording is not None:
+            try:
+                recording.stop()
+            except Exception:
+                pass
+        worker = self._worker
+        if worker is not None and worker.isRunning():
+            # Let the current ffmpeg pass finish rather than orphan it.
+            if not worker.wait(30000):
+                worker.terminate()
+                worker.wait(2000)
+        self._worker = None
 
 
 class VideoStudioWindow(QMainWindow):
@@ -160,6 +219,10 @@ class VideoStudioWindow(QMainWindow):
 
     def _go_home(self):
         self._stack.setCurrentWidget(self._page_home)
+
+    def closeEvent(self, event):
+        self._page_record.shutdown()
+        super().closeEvent(event)
 
 
 def main():

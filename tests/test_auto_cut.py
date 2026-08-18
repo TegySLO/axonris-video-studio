@@ -61,6 +61,26 @@ class TestBuildKeepSegments(unittest.TestCase):
             self.assertLessEqual(start, end)
 
 
+class TestProbeDuration(unittest.TestCase):
+
+    @patch("auto_cut.subprocess.run")
+    def test_raises_when_duration_cannot_be_parsed(self, mock_run):
+        # Regression: returning 0.0 here made _build_keep_segments
+        # truncate the output to its leading segment, silently discarding
+        # most of the recording. It must surface as a real error instead.
+        mock_run.return_value = MagicMock(returncode=1, stderr="moov atom not found\n")
+        with self.assertRaises(RuntimeError) as ctx:
+            ac._probe_duration("C:/tmp/broken.mp4")
+        self.assertIn("Could not determine duration", str(ctx.exception))
+
+    @patch("auto_cut.subprocess.run")
+    def test_parses_hh_mm_ss(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0, stderr="  Duration: 00:01:30.50, start: 0.000000\n",
+        )
+        self.assertAlmostEqual(ac._probe_duration("C:/tmp/ok.mp4"), 90.5, places=2)
+
+
 class TestRemoveSilence(unittest.TestCase):
 
     @patch("auto_cut.subprocess.run")

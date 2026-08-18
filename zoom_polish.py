@@ -36,6 +36,27 @@ def _zoom_scale_for_style(style: str) -> float:
     return {"moderate": 1.4, "aggressive": 1.9}.get(style, 1.4)
 
 
+def _even(value: int) -> int:
+    value = int(value)
+    return value - (value % 2)
+
+
+def _output_size(session: RecordingSession) -> str:
+    """zoompan's `s` option defaults to hd720 -- i.e. leaving it off does
+    NOT mean "keep the input size", it silently rescales. Derive it from
+    the real capture rect so a non-16:9 window isn't stretched (the old
+    hardcoded `hd1080` distorted every non-1080p capture)."""
+    if session.rect_width > 0 and session.rect_height > 0:
+        return f"{_even(session.rect_width)}x{_even(session.rect_height)}"
+    return "hd1080"
+
+
+def _output_fps(session: RecordingSession) -> float:
+    """zoompan's `fps` option defaults to 25, so without this the zoom
+    pass silently retimes a 15 or 30 fps capture to 25 fps."""
+    return session.fps if session.fps and session.fps > 0 else 30.0
+
+
 def _build_time_windowed_expr(targets: list[dict], value_fn, default_expr: str) -> str:
     """Builds a nested ffmpeg if(between(time,t0,t1), value, ...) chain, one
     level per target, falling through to default_expr when no target's
@@ -77,15 +98,24 @@ def apply_zoom(session: RecordingSession, output_path: str, style: str = "modera
         # if/else chain (not summed with "+") so that when zero or
         # multiple targets are inactive at a given instant, the default
         # branch is used exactly once instead of stacking.
+        #
+        # cursor_log records SCREEN-absolute coordinates
+        # (win32api.GetCursorPos), but zoompan's x/y are relative to the
+        # captured frame's own origin. For any window capture the frame
+        # starts at (rect_left, rect_top), so the raw screen coordinates
+        # aimed the zoom hundreds of pixels off -- often clean off-frame.
+        # Translate into frame space here.
+        left, top = session.rect_left, session.rect_top
         zoom_expr = _build_time_windowed_expr(targets, lambda tgt: str(scale), "1")
         x_expr = _build_time_windowed_expr(
-            targets, lambda tgt: f"{tgt['x']}-(iw/zoom/2)", "iw/2-(iw/zoom/2)"
+            targets, lambda tgt: f"{tgt['x'] - left}-(iw/zoom/2)", "iw/2-(iw/zoom/2)"
         )
         y_expr = _build_time_windowed_expr(
-            targets, lambda tgt: f"{tgt['y']}-(ih/zoom/2)", "ih/2-(ih/zoom/2)"
+            targets, lambda tgt: f"{tgt['y'] - top}-(ih/zoom/2)", "ih/2-(ih/zoom/2)"
         )
         filter_str = (
-            f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}':d=1:s=hd1080"
+            f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}':d=1"
+            f":s={_output_size(session)}:fps={_output_fps(session):.4f}"
         )
         cmd = [
             FFMPEG, "-y", "-i", session.raw_video_path,

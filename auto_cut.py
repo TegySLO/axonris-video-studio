@@ -23,7 +23,13 @@ def _probe_duration(path: str) -> float:
     )
     match = re.search(r"Duration:\s*(\d+):(\d+):([\d.]+)", result.stderr)
     if not match:
-        return 0.0
+        # Returning 0.0 here used to make _build_keep_segments truncate the
+        # output to just its leading segment, silently discarding most of
+        # the recording. Fail loudly instead -- the GUI surfaces this.
+        raise RuntimeError(
+            f"Could not determine duration of {path} from ffmpeg output. "
+            f"ffmpeg reported:\n{result.stderr[-800:].strip()}"
+        )
     h, m, s = match.groups()
     return int(h) * 3600 + int(m) * 60 + float(s)
 

@@ -70,9 +70,11 @@ class TestApplyZoom(unittest.TestCase):
         # ffmpeg filter init against a real binary). And the zoom must
         # actually center on the click's x/y, not default to 0,0.
         mock_run.return_value = MagicMock(returncode=0)
-        session = RecordingSession(raw_video_path="C:/tmp/raw.mp4", cursor_log=[
-            {"t": 1.0, "x": 500, "y": 300, "click": True},
-        ])
+        session = RecordingSession(
+            raw_video_path="C:/tmp/raw.mp4",
+            cursor_log=[{"t": 1.0, "x": 500, "y": 300, "click": True}],
+            rect_width=1920, rect_height=1080, fps=15.0,
+        )
         zp.apply_zoom(session, "C:/tmp/zoomed.mp4", style="moderate")
         cmd = mock_run.call_args[0][0]
         filter_arg = cmd[cmd.index("-vf") + 1]
@@ -83,3 +85,59 @@ class TestApplyZoom(unittest.TestCase):
         # The click's actual x/y must appear in the x/y expressions.
         self.assertIn("500", filter_arg)
         self.assertIn("300", filter_arg)
+
+    @patch("zoom_polish.subprocess.run")
+    def test_click_coordinates_are_translated_into_frame_space(self, mock_run):
+        # Regression: cursor_log stores SCREEN-absolute coordinates
+        # (win32api.GetCursorPos), but zoompan's x/y are relative to the
+        # captured frame's origin. Recording a window at (300, 200) used
+        # to aim the zoom 300px right and 200px down of the real click.
+        mock_run.return_value = MagicMock(returncode=0)
+        session = RecordingSession(
+            raw_video_path="C:/tmp/raw.mp4",
+            cursor_log=[{"t": 1.0, "x": 500, "y": 300, "click": True}],
+            rect_left=300, rect_top=200, rect_width=800, rect_height=600, fps=15.0,
+        )
+        zp.apply_zoom(session, "C:/tmp/zoomed.mp4")
+        filter_arg = mock_run.call_args[0][0][
+            mock_run.call_args[0][0].index("-vf") + 1
+        ]
+        # 500-300 = 200 across, 300-200 = 100 down
+        self.assertIn("200-(iw/zoom/2)", filter_arg)
+        self.assertIn("100-(ih/zoom/2)", filter_arg)
+        # and NOT the untranslated screen coordinates
+        self.assertNotIn("500-(iw/zoom/2)", filter_arg)
+        self.assertNotIn("300-(ih/zoom/2)", filter_arg)
+
+    @patch("zoom_polish.subprocess.run")
+    def test_filter_preserves_source_fps_and_size(self, mock_run):
+        # Regression: zoompan defaults to fps=25 and s=hd720, so leaving
+        # them unset silently retimed every capture to 25 fps, and the
+        # old hardcoded s=hd1080 stretched every non-1080p window.
+        mock_run.return_value = MagicMock(returncode=0)
+        session = RecordingSession(
+            raw_video_path="C:/tmp/raw.mp4",
+            cursor_log=[{"t": 1.0, "x": 400, "y": 300, "click": True}],
+            rect_width=1280, rect_height=800, fps=15.0,
+        )
+        zp.apply_zoom(session, "C:/tmp/zoomed.mp4")
+        filter_arg = mock_run.call_args[0][0][
+            mock_run.call_args[0][0].index("-vf") + 1
+        ]
+        self.assertIn("s=1280x800", filter_arg)
+        self.assertIn("fps=15", filter_arg)
+        self.assertNotIn("hd1080", filter_arg)
+
+    @patch("zoom_polish.subprocess.run")
+    def test_odd_capture_size_is_rounded_even_for_libx264(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0)
+        session = RecordingSession(
+            raw_video_path="C:/tmp/raw.mp4",
+            cursor_log=[{"t": 1.0, "x": 10, "y": 10, "click": True}],
+            rect_width=801, rect_height=603, fps=15.0,
+        )
+        zp.apply_zoom(session, "C:/tmp/zoomed.mp4")
+        filter_arg = mock_run.call_args[0][0][
+            mock_run.call_args[0][0].index("-vf") + 1
+        ]
+        self.assertIn("s=800x602", filter_arg)
