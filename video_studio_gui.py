@@ -8,9 +8,14 @@ import sys
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QStackedWidget, QWidget, QVBoxLayout,
-    QHBoxLayout, QLabel, QPushButton,
+    QHBoxLayout, QLabel, QPushButton, QComboBox, QProgressBar, QFileDialog,
 )
 from PySide6.QtGui import QFont
+
+from window_picker import list_recordable_windows
+from screen_recorder import start_recording
+from zoom_polish import apply_zoom
+from auto_cut import remove_silence
 
 
 class _GeneratePage(QWidget):
@@ -29,17 +34,88 @@ class _GeneratePage(QWidget):
 
 
 class _RecordPage(QWidget):
-    """Stub for Task 1 of the follow-up 'record a tutorial' plan -- real
-    screen-capture + auto-zoom + trim pipeline lands there, not here."""
+    """Record a tutorial: pick a window/screen, record, then auto-polish
+    (cursor-driven zoom + silence-based auto-cut) into a finished MP4.
+    No Claude Code/cloud GPU account needed -- pure local recording and
+    ffmpeg post-processing, distinct from _GeneratePage's BYOK path."""
 
     def __init__(self, on_back):
         super().__init__()
+        self._active_recording = None
+        self._output_dir = None
+
         lay = QVBoxLayout(self)
         self._btn_back = QPushButton("← Back")
         self._btn_back.clicked.connect(on_back)
         lay.addWidget(self._btn_back)
-        lay.addWidget(QLabel("Record a tutorial — coming soon."))
+
+        lay.addWidget(QLabel("Record a tutorial"))
+
+        row = QHBoxLayout()
+        self._window_combo = QComboBox()
+        self._window_combo.currentIndexChanged.connect(self._on_selection_changed)
+        row.addWidget(self._window_combo)
+
+        self._btn_refresh = QPushButton("Refresh")
+        self._btn_refresh.clicked.connect(self.refresh_window_list)
+        row.addWidget(self._btn_refresh)
+        lay.addLayout(row)
+
+        action_row = QHBoxLayout()
+        self._btn_start = QPushButton("Start Recording")
+        self._btn_start.setEnabled(False)
+        self._btn_start.clicked.connect(self._on_start_clicked)
+        action_row.addWidget(self._btn_start)
+
+        self._btn_stop = QPushButton("Stop && Polish")
+        self._btn_stop.setEnabled(False)
+        self._btn_stop.clicked.connect(self._on_stop_clicked)
+        action_row.addWidget(self._btn_stop)
+        lay.addLayout(action_row)
+
+        self._status_lbl = QLabel("")
+        lay.addWidget(self._status_lbl)
         lay.addStretch(1)
+
+        self.refresh_window_list()
+
+    def refresh_window_list(self):
+        self._window_combo.clear()
+        for entry in list_recordable_windows():
+            self._window_combo.addItem(entry["title"], entry)
+        self._on_selection_changed()
+
+    def _on_selection_changed(self):
+        self._btn_start.setEnabled(self._window_combo.count() > 0)
+
+    def _on_start_clicked(self):
+        target = self._window_combo.currentData()
+        if target is None:
+            return
+        output_dir = QFileDialog.getExistingDirectory(self, "Choose output folder")
+        if not output_dir:
+            return
+        self._output_dir = output_dir
+        self._active_recording = start_recording(target, output_dir)
+        self._btn_start.setEnabled(False)
+        self._btn_stop.setEnabled(True)
+        self._status_lbl.setText("Recording...")
+
+    def _on_stop_clicked(self):
+        if self._active_recording is None:
+            return
+        self._status_lbl.setText("Processing (zoom + silence cut)...")
+        self._btn_stop.setEnabled(False)
+        session = self._active_recording.stop()
+        self._active_recording = None
+
+        zoomed_path = session.raw_video_path.replace("raw_capture_", "zoomed_")
+        apply_zoom(session, zoomed_path)
+        final_path = zoomed_path.replace("zoomed_", "final_")
+        remove_silence(zoomed_path, final_path)
+
+        self._status_lbl.setText(f"Done: {final_path}")
+        self._btn_start.setEnabled(True)
 
 
 class VideoStudioWindow(QMainWindow):
